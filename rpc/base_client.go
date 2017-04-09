@@ -108,6 +108,9 @@ type BaseClient struct {
 	SendAndReceive func([]byte, *ClientContext) ([]byte, error)
 	UserData       map[string]interface{}
 	id             string
+	Reponse		   []byte
+	Request		   []byte
+	IsBench		   bool
 }
 
 // InitBaseClient initializes BaseClient
@@ -119,16 +122,16 @@ func (client *BaseClient) InitBaseClient() {
 		New: func() interface{} { return new(ClientContext) },
 	}
 	client.override.invokeHandler = func(
-		name string, args []reflect.Value,
-		context Context) (results []reflect.Value, err error) {
+	name string, args []reflect.Value,
+	context Context) (results []reflect.Value, err error) {
 		return client.invoke(name, args, context.(*ClientContext))
 	}
 	client.override.beforeFilterHandler = func(
-		request []byte, context Context) (response []byte, err error) {
+	request []byte, context Context) (response []byte, err error) {
 		return client.beforeFilter(request, context.(*ClientContext))
 	}
 	client.override.afterFilterHandler = func(
-		request []byte, context Context) (response []byte, err error) {
+	request []byte, context Context) (response []byte, err error) {
 		return client.afterFilter(request, context.(*ClientContext))
 	}
 	client.allTopics = make(map[string]map[string]*clientTopic)
@@ -258,14 +261,14 @@ func (client *BaseClient) AddAfterFilterHandler(handler ...FilterHandler) Client
 
 // SetUserData for client
 func (client *BaseClient) SetUserData(
-	userdata map[string]interface{}) Client {
+userdata map[string]interface{}) Client {
 	client.UserData = userdata
 	return client
 }
 
 // UseService build a remote service proxy object with namespace
 func (client *BaseClient) UseService(
-	remoteService interface{}, namespace ...string) {
+remoteService interface{}, namespace ...string) {
 	ns := ""
 	if len(namespace) == 1 {
 		ns = namespace[0]
@@ -279,7 +282,7 @@ func (client *BaseClient) UseService(
 
 // GetClientContext return a ClientContext
 func (client *BaseClient) GetClientContext(
-	settings *InvokeSettings) (context *ClientContext) {
+settings *InvokeSettings) (context *ClientContext) {
 	context = client.contextPool.Get().(*ClientContext)
 	context.InitBaseContext()
 	context.Client = client
@@ -313,9 +316,9 @@ func (client *BaseClient) GetClientContext(
 
 // Invoke the remote method synchronous
 func (client *BaseClient) Invoke(
-	name string,
-	args []reflect.Value,
-	settings *InvokeSettings) (results []reflect.Value, err error) {
+name string,
+args []reflect.Value,
+settings *InvokeSettings) (results []reflect.Value, err error) {
 	context := client.GetClientContext(settings)
 	results, err = client.handlerManager.invokeHandler(name, args, context)
 	if results == nil && len(context.ResultTypes) > 0 {
@@ -331,10 +334,10 @@ func (client *BaseClient) Invoke(
 
 // Go invoke the remote method asynchronous
 func (client *BaseClient) Go(
-	name string,
-	args []reflect.Value,
-	settings *InvokeSettings,
-	callback Callback) {
+name string,
+args []reflect.Value,
+settings *InvokeSettings,
+callback Callback) {
 	go func() {
 		defer client.fireErrorEvent(name, nil)
 		callback(client.Invoke(name, args, settings))
@@ -356,8 +359,8 @@ func (client *BaseClient) fireErrorEvent(name string, err error) {
 }
 
 func (client *BaseClient) beforeFilter(
-	request []byte,
-	context *ClientContext) (response []byte, err error) {
+request []byte,
+context *ClientContext) (response []byte, err error) {
 	request = client.outputFilter(request, context)
 	if context.Oneway {
 		go client.handlerManager.afterFilterHandler(request, context)
@@ -369,7 +372,7 @@ func (client *BaseClient) beforeFilter(
 }
 
 func (client *BaseClient) afterFilter(
-	request []byte, context *ClientContext) (response []byte, err error) {
+request []byte, context *ClientContext) (response []byte, err error) {
 	response, err = client.SendAndReceive(request, context)
 	if err != nil {
 		response, err = client.retrySendReqeust(request, err, context)
@@ -378,9 +381,9 @@ func (client *BaseClient) afterFilter(
 }
 
 func (client *BaseClient) retrySendReqeust(
-	request []byte,
-	err error,
-	context *ClientContext) ([]byte, error) {
+request []byte,
+err error,
+context *ClientContext) ([]byte, error) {
 	if context.Failswitch {
 		client.failswitch()
 	}
@@ -436,7 +439,7 @@ func encode(name string, args []reflect.Value, context *ClientContext) []byte {
 }
 
 func readMultiResults(
-	reader *hio.Reader, resultTypes []reflect.Type) (results []reflect.Value) {
+reader *hio.Reader, resultTypes []reflect.Type) (results []reflect.Value) {
 	length := len(resultTypes)
 	reader.CheckTag(hio.TagList)
 	count := reader.ReadCount()
@@ -454,7 +457,7 @@ func readMultiResults(
 }
 
 func readResults(
-	reader *hio.Reader, context *ClientContext) (results []reflect.Value) {
+reader *hio.Reader, context *ClientContext) (results []reflect.Value) {
 	length := len(context.ResultTypes)
 	switch length {
 	case 0:
@@ -490,9 +493,9 @@ func readArgs(reader *hio.Reader, args []reflect.Value) byte {
 }
 
 func decode(
-	data []byte,
-	args []reflect.Value,
-	context *ClientContext) (results []reflect.Value, err error) {
+data []byte,
+args []reflect.Value,
+context *ClientContext) (results []reflect.Value, err error) {
 	if context.Oneway {
 		return
 	}
@@ -539,14 +542,20 @@ func decode(
 }
 
 func (client *BaseClient) invoke(
-	name string,
-	args []reflect.Value,
-	context *ClientContext) ([]reflect.Value, error) {
+name string,
+args []reflect.Value,
+context *ClientContext) ([]reflect.Value, error) {
 	request := encode(name, args, context)
+	client.Request = request
+	//压力测试只获取 格式数据
+	if client.IsBench {
+		return nil, nil
+	}
 	response, err := client.handlerManager.beforeFilterHandler(request, context)
 	if err != nil {
 		return nil, err
 	}
+	client.Reponse = response
 	return decode(response, args, context)
 }
 
@@ -584,7 +593,7 @@ func (client *BaseClient) buildRemoteService(v reflect.Value, ns string) {
 }
 
 func (client *BaseClient) buildRemoteSubService(
-	f reflect.Value, ft reflect.Type, sf reflect.StructField, ns string) {
+f reflect.Value, ft reflect.Type, sf reflect.StructField, ns string) {
 	namespace := ns
 	if !sf.Anonymous {
 		if ns == "" {
@@ -706,9 +715,9 @@ func getIn(in []reflect.Value) []reflect.Value {
 }
 
 func (client *BaseClient) getSyncRemoteMethod(
-	name string,
-	settings *InvokeSettings,
-	isVariadic, hasError bool) func(in []reflect.Value) (out []reflect.Value) {
+name string,
+settings *InvokeSettings,
+isVariadic, hasError bool) func(in []reflect.Value) (out []reflect.Value) {
 	return func(in []reflect.Value) (out []reflect.Value) {
 		if isVariadic {
 			in = getIn(in)
@@ -729,9 +738,9 @@ func (client *BaseClient) getSyncRemoteMethod(
 }
 
 func (client *BaseClient) getAsyncRemoteMethod(
-	name string,
-	settings *InvokeSettings,
-	isVariadic, hasError bool) func(in []reflect.Value) (out []reflect.Value) {
+name string,
+settings *InvokeSettings,
+isVariadic, hasError bool) func(in []reflect.Value) (out []reflect.Value) {
 	return func(in []reflect.Value) (out []reflect.Value) {
 		go func() {
 			if isVariadic {
@@ -752,7 +761,7 @@ func (client *BaseClient) getAsyncRemoteMethod(
 }
 
 func (client *BaseClient) buildRemoteMethod(
-	f reflect.Value, ft reflect.Type, sf reflect.StructField, ns string) {
+f reflect.Value, ft reflect.Type, sf reflect.StructField, ns string) {
 	name := getRemoteMethodName(sf, ns)
 	outTypes, hasError := getResultTypes(ft)
 	async := false
@@ -779,6 +788,7 @@ func (client *BaseClient) buildRemoteMethod(
 		ResultTypes:    outTypes,
 		userData:       getUserData(sf.Tag),
 	}
+	fmt.Printf("%+v 1\n", settings.ResultTypes,)
 	var fn func(in []reflect.Value) (out []reflect.Value)
 	if async {
 		fn = client.getAsyncRemoteMethod(name, settings, ft.IsVariadic(), hasError)
@@ -830,11 +840,11 @@ func (client *BaseClient) ID() string {
 }
 
 func (client *BaseClient) processCallback(
-	name string,
-	callbacks []Callback,
-	resultTypes []reflect.Type,
-	results []reflect.Value,
-	err error) {
+name string,
+callbacks []Callback,
+resultTypes []reflect.Type,
+results []reflect.Value,
+err error) {
 	defer client.fireErrorEvent(name, nil)
 	if resultTypes != nil && len(resultTypes) > 0 {
 		writer := hio.NewWriter(false)
@@ -855,7 +865,7 @@ func (client *BaseClient) processCallback(
 }
 
 func (client *BaseClient) subscribe(
-	name string, id string, settings *InvokeSettings) {
+name string, id string, settings *InvokeSettings) {
 	resultTypes := settings.ResultTypes
 	settings.ResultTypes = []reflect.Type{interfaceType}
 	args := []reflect.Value{reflect.ValueOf(id)}
@@ -876,8 +886,8 @@ func (client *BaseClient) subscribe(
 
 // Subscribe a push topic
 func (client *BaseClient) Subscribe(
-	name string, id string,
-	settings *InvokeSettings, callback interface{}) (err error) {
+name string, id string,
+settings *InvokeSettings, callback interface{}) (err error) {
 	if id == "" {
 		id, err = client.AutoID()
 		if err != nil {
